@@ -1,6 +1,34 @@
 import socket
 import threading
 import json
+import zlib
+import traceback
+
+
+class Message:
+    def __init__(self, text=None, message_type='broadcast', sender_id=0, sender_nickname='Server', receiver_id=None, message_No=0):
+        self.text = text
+        self.message_type = message_type
+        self.sender_id = sender_id
+        self.sender_nickname = sender_nickname
+        self.receiver_id = receiver_id
+        self.message_No = message_No
+        if text != None:
+            self.CRC32 = zlib.crc32(self.text.encode())
+        else:
+            self.CRC32 = 0
+
+    def byte(self):
+        ret = json.dumps({
+            'text': self.text,
+            'message_type': self.message_type,
+            'sender_id': self.sender_id,
+            'sender_nickname': self.sender_nickname,
+            'receiver_id': self.receiver_id,
+            'CRC32': self.CRC32,
+            'message_No': self.message_No
+        }).encode()
+        return ret
 
 
 class Server:
@@ -24,8 +52,8 @@ class Server:
         connection = self.__connections[user_id]
         nickname = self.__nicknames[user_id]
         print('[Server] 用户', user_id, nickname, '加入聊天室')
-        self.__broadcast(message='用户 ' + str(nickname) +
-                         '(' + str(user_id) + ')' + '加入聊天室')
+        self.__broadcast(Message(text='用户 ' + str(nickname) +
+                         '(' + str(user_id) + ')' + '加入聊天室'))
 
         # 侦听
         while True:
@@ -34,50 +62,69 @@ class Server:
                 buffer = connection.recv(1024).decode()
                 # 解析成json数据
                 obj = json.loads(buffer)
+                if obj['CRC32'] != zlib.crc32(obj['text'].encode()):
+                    print("[Server] 收到损坏的报文")
+
                 # 如果是广播指令
-                if obj['type'] == 'broadcast':
-                    self.__broadcast(obj['sender_id'], obj['message'])
-                elif obj['type'] == 'logout':
+                if obj['message_type'] == 'broadcast':
+                    self.__broadcast(message=Message(text=obj['text'], message_type=obj['message_type'],
+                                     sender_id=obj['sender_id'], sender_nickname=self.__nicknames[int(obj['sender_id'])]))
+                    print(f"向{obj['sender_id']}发送报文")
+                   # self.__broadcast(
+                   #     user_id=obj['sender_id'], text=obj['text'])
+
+                elif obj['message_type'] == 'unicast':
+                    self.__unicast(
+                        receiver_id=obj['receiver_id'], message=Message(text=obj['text'], message_type=obj['message_type'],
+                                                                        sender_id=obj['sender_id'], sender_nickname=self.__nicknames[int(obj['sender_id'])]))
+
+                elif obj['message_type'] == 'logout':
                     print('[Server] 用户', user_id, nickname, '退出聊天室')
-                    self.__broadcast(
-                        message='用户 ' + str(nickname) + '(' + str(user_id) + ')' + '退出聊天室')
+                    self.__broadcast(Message(
+                        text='用户 ' + str(nickname) + '(' + str(user_id) + ')' + '退出聊天室'))
                     self.__connections[user_id].close()
                     self.__connections[user_id] = None
                     self.__nicknames[user_id] = None
                     break
+
                 else:
                     print('[Server] 无法解析json数据包:',
                           connection.getsockname(), connection.fileno())
             except Exception:
                 print('[Server] 连接失效:', connection.getsockname(),
                       connection.fileno())
+                traceback.print_exc()
                 self.__connections[user_id].close()
+                print("已关闭连接")
                 self.__connections[user_id] = None
                 self.__nicknames[user_id] = None
 
-    def __broadcast(self, user_id=0, message=''):
+    def __broadcast(self, message, transit_data=None, user_id=None):
         """
         广播
         :param user_id: 用户id(0为系统)
-        :param message: 广播内容
+        :param message: Message 类对象
+        :param transit_data: byte 对象
         """
-        for i in range(1, len(self.__connections)):
-            if user_id != i and self.__connections[i]:
-                self.__connections[i].send(json.dumps({
-                    'sender_id': user_id,
-                    'sender_nickname': self.__nicknames[user_id],
-                    'message': message
-                }).encode())
 
-    def __unicast(self, user_id, message):
-        for i in range(1, len(self.__connections)):
-            if user_id == i and self.__connections[i]:
-                self.__connections[i].send(json.dumps({
-                    'sender_id': user_id,
-                    'sender_nickname': self.__nicknames[user_id],
-                    'message': message
-                }).encode())
-        pass
+        if transit_data != None:
+            if user_id != i and self.__connections[i]:
+                # user_id != i 是因为不需要将广播信息传回给发送者
+                self.__connections[i].send(transit_data)
+
+        if message.message_type == 'broadcast':
+            for i in range(1, len(self.__connections)):
+                if message.receiver_id != i and self.__connections[i]:
+                    self.__connections[i].send(message.byte())
+        else:
+            print("[Server] 非广播数据报被传入broadcast函数!")
+
+    def __unicast(self, receiver_id, message):
+        receiver_id=int(receiver_id)
+        if receiver_id > 0 and receiver_id < len(self.__connections):
+            self.__connections[receiver_id].send(message.byte())
+        else:
+            print("[Server] 私信了不存在的用户")
 
     def __waitForLogin(self, connection):
         # 尝试接受数据
@@ -87,7 +134,7 @@ class Server:
             # 解析成json数据
             obj = json.loads(buffer)
             # 如果是连接指令，那么则返回一个新的用户编号，接收用户连接
-            if obj['type'] == 'login':
+            if obj['message_type'] == 'login':
                 self.__connections.append(connection)
                 self.__nicknames.append(obj['nickname'])
                 connection.send(json.dumps({
