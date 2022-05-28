@@ -6,13 +6,15 @@ import traceback
 
 
 class Message:
-    def __init__(self, text=None, message_type='broadcast', sender_id=0, sender_nickname='Server', receiver_id=None, message_No=0):
+    def __init__(self, text=None, message_type='broadcast', sender_id=1, sender_nickname='User', receiver_id=None, message_No=0, burn=0, filename=None):
         self.text = text
         self.message_type = message_type
         self.sender_id = sender_id
         self.sender_nickname = sender_nickname
         self.receiver_id = receiver_id
         self.message_No = message_No
+        self.burn = burn
+        self.filename = filename
         if text != None:
             self.CRC32 = zlib.crc32(self.text.encode())
         else:
@@ -26,7 +28,9 @@ class Message:
             'sender_nickname': self.sender_nickname,
             'receiver_id': self.receiver_id,
             'CRC32': self.CRC32,
-            'message_No': self.message_No
+            'message_No': self.message_No,
+            'burn': self.burn,
+            'filename': self.filename
         }).encode()
         return ret
 
@@ -73,10 +77,11 @@ class Server:
                    # self.__broadcast(
                    #     user_id=obj['sender_id'], text=obj['text'])
 
-                elif obj['message_type'] == 'unicast':
+                elif obj['message_type'] == 'unicast' or obj['message_type'] == 'file':
                     self.__unicast(
                         receiver_id=obj['receiver_id'], message=Message(text=obj['text'], message_type=obj['message_type'],
-                                                                        sender_id=obj['sender_id'], sender_nickname=self.__nicknames[int(obj['sender_id'])]))
+                                                                        sender_id=obj['sender_id'],
+                                                                        sender_nickname=self.__nicknames[int(obj['sender_id'])], filename=obj['filename']))
 
                 elif obj['message_type'] == 'logout':
                     print('[Server] 用户', user_id, nickname, '退出聊天室')
@@ -120,7 +125,7 @@ class Server:
             print("[Server] 非广播数据报被传入broadcast函数!")
 
     def __unicast(self, receiver_id, message):
-        receiver_id=int(receiver_id)
+        receiver_id = int(receiver_id)
         if receiver_id > 0 and receiver_id < len(self.__connections):
             self.__connections[receiver_id].send(message.byte())
         else:
